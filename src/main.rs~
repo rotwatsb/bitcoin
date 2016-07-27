@@ -1,0 +1,12 @@
+extern crate rand;
+extern crate rustc_serialize;
+extern crate crypto;
+extern crate num;
+
+mod address;
+
+use address::{Address};
+
+fn main() {
+    let addr: Address = Address::new();
+}

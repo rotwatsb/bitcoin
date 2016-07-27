@@ -1,0 +1,11 @@
+[package]
+name = "bitcoin"
+version = "0.1.0"
+authors = ["Steve Bradley <stevebradley@gmail.com>"]
+
+[dependencies]
+rand = "0.3"
+rust-crypto = "^0.2"
+rustc-serialize = "0.3"
+libc = "0.2"
+openssl-sys = "0.7.14"
