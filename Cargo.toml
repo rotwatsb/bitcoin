@@ -4,7 +4,4 @@ version = "0.1.0"
 authors = ["Steve Bradley <stevebradley@gmail.com>"]
 
 [dependencies]
-rand = "0.3"
-rust-crypto = "^0.2"
-rustc-serialize = "0.3"
-secp256k1 = "0.5.4"
+bitcoin = { git = "https://github.com/rotwatsb/rust-bitcoin.git", branch = "getaddr" }

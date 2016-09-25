@@ -1,18 +1,20 @@
-extern crate secp256k1;
-extern crate rand;
-extern crate crypto;
+extern crate bitcoin;
 
-use secp256k1::key::{PublicKey, SecretKey};
-use secp256k1::Secp256k1;
+mod bitcoind;
+mod peerd;
+mod util;
 
-
-mod address;
+use bitcoind::Bitcoind;
 
 fn main() {
-    let secp: Secp256k1 = Secp256k1::new();
-    let pri_key = address::new_pri_key(&secp);
-    let pub_key = address::pub_from_pri(&secp, &pri_key);
-    println!("{:?}\n{:?}", pri_key, pub_key);
-
-    let mut data: [u8; 32] = pub_key.serialize_vec(&secp, false)
+    let daemon = Bitcoind::new("127.0.0.1", 8333, "/home/steve/rust/bitcoin/blockchain/bitcoin.dat");
+    match daemon.listen() {
+        Ok(()) => (),
+        Err(e) => println!("{:?}", e),
+    }
 }
+
+
+
+
+

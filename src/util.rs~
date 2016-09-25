@@ -1,0 +1,33 @@
+use std::sync::mpsc::{Sender};
+use std::net::{IpAddr, Ipv4Addr};
+
+use bitcoin::network::address::Address;
+use bitcoin::blockdata::block::{LoneBlockHeader, Block};
+use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::network::message_blockdata::Inventory;
+use bitcoin::util::Error;
+
+
+pub enum ThreadResponse {
+    Addresses(Vec<(u32, Address)>),
+    Headers(String, Vec<LoneBlockHeader>),
+    Inv(String, Vec<Inventory>),
+    Block(Block),
+    Tx(Transaction),
+    CloseThread((Error, Sender<()>)),
+}
+
+pub fn ipv4_to_ipv4addr(ip: &str) -> Ipv4Addr {
+    let ip_vec = ip.to_string().split('.')
+        .map(|slice| slice.trim().parse::<u8>().unwrap())
+        .collect::<Vec<u8>>();
+    Ipv4Addr::new(ip_vec[0], ip_vec[1], ip_vec[2], ip_vec[3])
+}
+
+pub fn string_of_address(address: &Address) -> String {
+    (address.address[6] / 256).to_string() + "." +
+        &((address.address[6] % 256).to_string()) + "." +
+        &((address.address[7] / 256).to_string()) + "." +
+        &((address.address[7] % 256).to_string())
+}
+
