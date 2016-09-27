@@ -5,3 +5,4 @@ authors = ["Steve Bradley <stevebradley@gmail.com>"]
 
 [dependencies]
 bitcoin = { git = "https://github.com/rotwatsb/rust-bitcoin.git", branch = "getaddr" }
+postgres = "0.11"

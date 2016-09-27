@@ -1,5 +1,5 @@
 use std::sync::mpsc::{Sender};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 use bitcoin::network::address::Address;
 use bitcoin::blockdata::block::{LoneBlockHeader, Block};

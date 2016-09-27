@@ -1,14 +1,11 @@
 use std::time::Duration;
 use std::thread;
-use std::path::Path;
 use std::sync::mpsc::{Sender, Receiver, channel, TryRecvError};
 
 use bitcoin::network::listener::Listener;
 use bitcoin::network::constants::Network;
 use bitcoin::network::socket::Socket;
 use bitcoin::network::message::{SocketResponse, NetworkMessage};
-use bitcoin::network::message_blockdata::Inventory;
-use bitcoin::network::address::Address;
 use bitcoin::util::misc::consume_err;
 use bitcoin::util::Error;
 
@@ -31,7 +28,7 @@ impl Peerd {
         let (sender, receiver): (Sender<ThreadResponse>,
                                  Receiver<ThreadResponse>) = channel();
         
-        let mut self_clone = self.clone();
+        let self_clone = self.clone();
         
         thread::spawn(move || {
             println!("Trying to connect to {}", self_clone.config.peer_addr);
@@ -144,7 +141,7 @@ impl Peerd {
     fn loop_connect(&self) -> Result<(Receiver<SocketResponse>, Socket), Error> {
         let max_attempts = 5;
         let mut err: Error = Error::ParseFailed;
-        for i in 0..max_attempts {
+        for _ in 0..max_attempts {
             match self.start() {
                 Ok((chan, sock)) => { return Ok((chan, sock)); }
                 Err(e) => { err = e; }
