@@ -4,7 +4,7 @@
 
 <p>And while Bitcoin Core does offer an option to only store X MB of block data, no transaction data will be kept if this option is used.</p>
 
-<p>Instead, this project listens to the network and tracks the 1000 most recently mined blocks, saving both block headers and transaction data to a PostgreSQL database as those blocks are mined. It's being written with the intention of serving as part of the backend to a lightweight block explorer. That project can be seen in its current state at https://www.rotwatsb.net/talk</p>
+<p>Instead, this project listens to the network and tracks the 1000 most recently mined blocks, saving both block headers and transaction data to a PostgreSQL database as those blocks are mined. It's being written with the intention of serving as part of the backend to a lightweight block explorer. That project can be seen in its current state at www.rotwatsb.net/talk</p>
 
 <p>The code uses the <a href="https://github.com/apoelstra/rust-bitcoin">Rust-Bitcoin library</a> to send, receive, and (de)serialize network messages, and to maintain block data. It uses <a href="https://github.com/sfackler/rust-postgres">the Rust-Postgres crate</a> to write/read to/from the database.</p>
 
