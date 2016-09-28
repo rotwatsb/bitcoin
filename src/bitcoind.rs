@@ -335,25 +335,15 @@ impl Bitcoind {
             }
             
             for input in tx.input {
-                if let Some(old_block_hash) =
-                    self.db_state.iter().find(|&&x| x == input.prev_hash) {
-                        match conn.execute("INSERT INTO talk_txin \
-                                            (tx_id, prev_tx_id, prev_index) \
-                                            VALUES ($1, $2, $3)",
-                                           &[&tx_hash_string,
-                                             &(input.prev_hash.be_hex_string()),
-                                             &(input.prev_index as i32)]) {
-                            Ok(_) => (),
-                            Err(e) =>
-                                println!("Error writing txin to rainbow: {:?}", e),
-                        }
-                    }
-                else {
-                    match conn.execute("INSERT INTO talk_txin (tx_id) VALUES ($1)",
-                                       &[&tx_hash_string]) {
-                        Ok(_) => (),
-                        Err(e) => println!("Error writing txin to rainbow: {:?}", e),
-                    }
+                match conn.execute("INSERT INTO talk_txin \
+                                    (tx_id, prev_tx, prev_index) \
+                                    VALUES ($1, $2, $3)",
+                                   &[&tx_hash_string,
+                                     &(input.prev_hash.be_hex_string()),
+                                     &(input.prev_index as i32)]) {
+                    Ok(_) => (),
+                    Err(e) =>
+                        println!("Error writing txin to rainbow: {:?}", e),
                 }
             }
             
@@ -389,7 +379,7 @@ impl Bitcoind {
                         },
                     }
                 },
-                Err(e) => println!("Could open blockchain for saving"),
+                Err(e) => println!("Could not open blockchain for saving"),
             }
         Ok(())
     }
