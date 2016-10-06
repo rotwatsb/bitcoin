@@ -23,7 +23,7 @@ use peerd::Peerd;
 use util::{ThreadResponse, ipv4_to_ipv4addr, string_of_address};
 
 pub const MAX_CNXS: usize = 50;
-pub const MAX_BLCKS: usize = 1000;
+pub const MAX_BLCKS: usize = 200;
 
 pub struct Bitcoind {
     new_addresses: Arc<Mutex<Vec<Address>>>,
@@ -259,24 +259,79 @@ impl Bitcoind {
     }
 
     fn update_db(&mut self, block: Block) -> Result<(), Error> {
+
+        fn remove_old_block(conn: &Connection, old_block_hash_string: &String)
+                            -> Result<(), Error> {
+            
+            // remove comments
+            match conn.execute("DELETE FROM talk_comment WHERE block_hash_id = $1",
+                               &[&old_block_hash_string]) {
+                Ok(n) => println!("Successfully removed comment data: {}", n),
+                Err(e) => println!("Could not remove comment data: {:?}", e),
+            }
+
+            // set 'prev_block_hash_id' to NULL for old block's successor
+            match conn.execute("UPDATE talk_block SET prev_block_hash_id = NULL \
+                                WHERE block_hash IN (SELECT block_hash FROM \
+                                talk_block WHERE prev_block_hash_id = $1)",
+                               &[&old_block_hash_string]) {
+                Ok(n) => println!("Successfully set 'prev_block_hash_id' to NULL \
+                                   for block successor in database"),
+                Err(e) => println!("Could not set 'prev_block_hash_id' to NULL for \
+                                    block successor in database: {:?}", e),
+            }
+
+            // remove txout data
+            match conn.execute("DELETE FROM talk_txout WHERE tx_id IN (SELECT \
+                                tx_hash FROM talk_transaction WHERE block_hash_id = \
+                                $1)",
+                               &[&old_block_hash_string]) {
+                Ok(n) => println!("Successfully removed TxOut data: {}", n),
+                Err(e) => println!("Could not remove TxOut data: {:?}", e),
+            }
+
+            // remove txin data
+            match conn.execute("DELETE FROM talk_txin WHERE tx_id IN (SELECT \
+                                tx_hash FROM talk_transaction WHERE block_hash_id = \
+                                $1)",
+                               &[&old_block_hash_string]) {
+                Ok(n) => println!("Successfully removed TxIn data: {}", n),
+                Err(e) => println!("Could not remove TxIn data: {:?}", e),
+            }
+
+            // remove transactions
+            match conn.execute("DELETE FROM talk_transaction WHERE block_hash_id \
+                                = $1", &[&old_block_hash_string]) {
+                Ok(n) => println!("Successfully removed Transaction data: {}", n),
+                Err(e) => println!("Could not remove Transaction data: {:?}", e),
+            }
+
+            // delete the old block
+            match conn.execute("DELETE FROM talk_block WHERE block_hash = $1",
+                               &[&old_block_hash_string]) {
+                Ok(n) => println!("Successfully removed old block: {}", n),
+                Err(e) => println!("Could not remove old block: {:?}", e),
+            }
+
+            Ok(())
+        }
         
         let block_hash: Sha256dHash = block.header.bitcoin_hash();
         let block_hash_string: String = block_hash.be_hex_string();
         println!("block hash: {}", block_hash_string.clone());
         
         self.db_state.push_back(block_hash);
-        try!(self.save_db_state());
-
+        
         let conn = Connection::connect(self.db_cnx.as_str(), SslMode::None).unwrap();
 
-        if self.db_state.len() > MAX_BLCKS {
-            if let Some(old_block_hash) = self.db_state.pop_front() {
-                match conn.execute("DELETE FROM talk_block WHERE block_hash = $1",
-                                   &[&(old_block_hash.be_hex_string())]) {
-                    Ok(n) => println!("Successfully removed old block from database"),
-                    Err(e) => println!("Error removing old block from database"),
+        while self.db_state.len() > MAX_BLCKS {
+            match self.db_state.pop_front() {
+                Some(old_block_hash) => {
+                    let old_block_hash_string = old_block_hash.be_hex_string();
+                    try!(remove_old_block(&conn, &old_block_hash_string));
+                    try!(self.blockchain.remove_txdata(old_block_hash));
                 }
-                try!(self.blockchain.remove_txdata(old_block_hash));
+                None => panic!("Failed to pop from block queue"),
             }
         }
         
@@ -286,45 +341,29 @@ impl Bitcoind {
                 block_node_ref.height
             } else { 1111 };
 
-        if let Some(prev_block_hash) =
-            self.db_state.iter().find(|&&x| x == block.header.prev_blockhash) {
-                match conn.execute("INSERT INTO talk_block \
-                                    (block_hash, prev_block_hash_id, block_size, \
-                                    block_height, merkleroot, time, median_time, \
-                                    bits, nonce) \
-                                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                                   &[&block_hash_string,
-                                     &block.header.prev_blockhash.be_hex_string(),
-                                     &(1111 as i32),
-                                     &(block_height as i32),
-                                     &block.header.merkle_root.be_hex_string(),
-                                     &(block.header.time as i32),
-                                     &(1111 as i32),
-                                     &(block.header.bits as i64),
-                                     &(block.header.nonce as i64)]) {
-                    Ok(_) => (),
-                    Err(e) => println!("Error writing block to rainbow: {:?}", e),
-                }
-            }
-        else {
-            match conn.execute("INSERT INTO talk_block \
-                                (block_hash, block_size, \
-                                block_height, merkleroot, time, median_time, \
-                                bits, nonce) \
-                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                               &[&block_hash_string,
-                                 &(1111 as i32),
-                                 &(block_height as i32),
-                                 &block.header.merkle_root.be_hex_string(),
-                                 &(block.header.time as i32),
-                                 &(1111 as i32),
-                                 &(block.header.bits as i64),
-                                 &(block.header.nonce as i64)]) {
-                Ok(_) => (),
-                Err(e) => println!("Error writing block to rainbow: {:?}", e),
-            }
+        let prev_block_hash_option: Option<String> =
+            if let Some(pbh) = self.db_state.iter()
+            .find(|&&x| x == block.header.prev_blockhash) {
+                Some(pbh.be_hex_string())
+            } else { None };
+        
+        match conn.execute("INSERT INTO talk_block (block_hash, prev_block_hash_id, \
+                            block_size, block_height, merkleroot, time, \
+                            median_time, bits, nonce) \
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                           &[&block_hash_string,
+                             &prev_block_hash_option,
+                             &(1111 as i32),
+                             &(block_height as i32),
+                             &block.header.merkle_root.be_hex_string(),
+                             &(block.header.time as i32),
+                             &(1111 as i32),
+                             &(block.header.bits as i64),
+                             &(block.header.nonce as i64)]) {
+            Ok(_) => (),
+            Err(e) => println!("Error writing block to rainbow: {:?}", e),
         }
-
+        
         for tx in block.txdata {
             let tx_hash_string = tx.bitcoin_hash().be_hex_string();
             match conn.execute("INSERT INTO talk_transaction \
@@ -359,6 +398,8 @@ impl Bitcoind {
                 }
             }
         }
+
+        try!(self.save_db_state());
         
         Ok(())
     }
@@ -468,3 +509,20 @@ fn load_blockchain(path_to_chain: &String) -> Blockchain {
     }
 }
 
+/*
+            match conn.query(
+                "SELECT block_hash FROM talk_block WHERE prev_block_hash_id = $1",
+                &[&old_block_hash_string]) {
+                Ok(next_block_row) =>
+                    match conn.execute("UPDATE talk_block SET prev_block_hash_id = \
+                                        NULL WHERE block_hash = $1",
+                                       &[&(next_block_row.get(0).get(0))]) {
+                        Ok(n) => println!("Successfully set 'prev_block_hash_id' to \
+                                           NULL for block successor in database"),
+                        Err(e) => println!("Could not set 'prev_block_hash_id' to \
+                                            NULL for block successor: {:?}", e),
+                    }
+                Err(e) => println!("Failed to locate block in database with given \
+                                    'prev_block_hash_id': {:?}", e),
+            }
+*/
