@@ -14,13 +14,14 @@ use bitcoin::network::constants::Network;
 use bitcoin::network::address::Address;
 use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::util::address::Address as Secp256k1Address;
 use bitcoin::util::Error;
 use bitcoin::util::hash::Sha256dHash;
 
 use postgres::{Connection, SslMode};
 
 use peerd::Peerd;
-use util::{ThreadResponse, ipv4_to_ipv4addr, string_of_address};
+use util::{ThreadResponse, ipv4_to_ipv4addr, string_of_address, addr_from_hash};
 
 pub const MAX_CNXS: usize = 50;
 pub const MAX_BLCKS: usize = 200;
@@ -363,6 +364,8 @@ impl Bitcoind {
             Ok(_) => (),
             Err(e) => println!("Error writing block to rainbow: {:?}", e),
         }
+
+        //self.save_scriptsigs(&block);
         
         for tx in block.txdata {
             let tx_hash_string = tx.bitcoin_hash().be_hex_string();
@@ -374,6 +377,7 @@ impl Bitcoind {
             }
             
             for input in tx.input {
+                
                 match conn.execute("INSERT INTO talk_txin \
                                     (tx_id, prev_tx, prev_index) \
                                     VALUES ($1, $2, $3)",
@@ -387,21 +391,76 @@ impl Bitcoind {
             }
             
             for (i, output) in tx.output.iter().enumerate() {
+
+                let v = output.script_pubkey.clone().into_vec();
+                let mut j = 0;
+                let l = v.len();
+                while j < l && v[j] != 20 { j += 1 }
+                let addr = if v.len() >= j + 21 {
+                    addr_from_hash(&v[j + 1..j + 21])
+                } else { "".to_string() };
+                
                 match conn.execute("INSERT INTO talk_txout \
-                                    (tx_id, value, output_index) \
-                                    VALUES ($1, $2, $3)",
+                                    (tx_id, value, output_index, pubkey) \
+                                    VALUES ($1, $2, $3, $4)",
                                    &[&tx_hash_string,
                                      &(output.value as i64),
-                                     &(i as i32)]) {
+                                     &(i as i32),
+                                     &addr]) {
                     Ok(_) => (),
                     Err(e) => println!("Error writing txout to rainbow: {:?}", e),
                 }
             }
         }
-
+        
         try!(self.save_db_state());
         
         Ok(())
+    }
+    
+    fn save_scriptsigs(&self, block: &Block) {
+        let path_to_scriptsigs = beside_path(&self.path_to_chain, "scriptsigs.txt");
+        let path_to_scriptpubkeys = beside_path(&self.path_to_chain, "scriptpubkeys.txt");
+        
+        match OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(path_to_scriptsigs) {
+                Ok(file) => {
+                    let mut writer = BufWriter::new(file);
+                    for tx in block.txdata.clone() {
+                        for input in tx.input {
+                            for byte in input.script_sig.clone().into_vec() {
+                                writer.write(byte.to_string().as_bytes());
+                                writer.write(" ".to_string().as_bytes());
+                            }
+                            writer.write("\n".to_string().as_bytes());
+                            writer.write(format!("{}\n", input.script_sig).as_bytes());
+                        }
+                    }
+                },
+                Err(e) => println!("Could not open inputs for saving"),
+            }
+
+        match OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(path_to_scriptpubkeys) {
+                Ok(file) => {
+                    let mut writer = BufWriter::new(file);
+                    for tx in block.txdata.clone() {
+                        for output in tx.output {
+                            for byte in output.script_pubkey.clone().into_vec() {
+                                writer.write(byte.to_string().as_bytes());
+                                writer.write(" ".to_string().as_bytes());
+                            }
+                            writer.write("\n".to_string().as_bytes());
+                            writer.write(format!("{}\n", output.script_pubkey).as_bytes());
+                        }
+                    }
+                },
+                Err(e) => println!("Could not open outputs for saving"),
+            }
     }
 
     fn save_blockchain(&mut self) -> Result<(), Error> {
@@ -429,7 +488,7 @@ impl Bitcoind {
         let queue_as_vec: Vec<Sha256dHash> = self.db_state.iter()
             .map(|&hash| hash.clone()).collect();
 
-        let path = db_state_path(&self.path_to_chain);
+        let path = beside_path(&self.path_to_chain, "db_state.dat");
         
         match OpenOptions::new()
             .write(true)
@@ -453,21 +512,21 @@ impl Bitcoind {
     }
 }
 
-fn db_state_path(path_to_chain: &String) -> String {
-    let mut i = path_to_chain.len();
-    for c in path_to_chain.chars().rev() {
+fn beside_path(base_path: &String, newfilename: &str) -> String {
+    let mut i = base_path.len();
+    for c in base_path.chars().rev() {
         if c == '/' {
             break;
         }
         i -= 1;
     }
-    let mut path = path_to_chain.chars().take(i).collect::<String>();
-    path = path + "db_state.dat";
+    let mut path = base_path.chars().take(i).collect::<String>();
+    path = path + newfilename;
     path
 }
 
 fn load_db_state(path_to_chain: &String) -> Vec<Sha256dHash> {
-    let path = db_state_path(path_to_chain);
+    let path = beside_path(path_to_chain, "db_state.dat");
     match File::open(&path) {
         Err(e) => {
             println!("Could not open db_state file at {}", path);
@@ -509,20 +568,3 @@ fn load_blockchain(path_to_chain: &String) -> Blockchain {
     }
 }
 
-/*
-            match conn.query(
-                "SELECT block_hash FROM talk_block WHERE prev_block_hash_id = $1",
-                &[&old_block_hash_string]) {
-                Ok(next_block_row) =>
-                    match conn.execute("UPDATE talk_block SET prev_block_hash_id = \
-                                        NULL WHERE block_hash = $1",
-                                       &[&(next_block_row.get(0).get(0))]) {
-                        Ok(n) => println!("Successfully set 'prev_block_hash_id' to \
-                                           NULL for block successor in database"),
-                        Err(e) => println!("Could not set 'prev_block_hash_id' to \
-                                            NULL for block successor: {:?}", e),
-                    }
-                Err(e) => println!("Failed to locate block in database with given \
-                                    'prev_block_hash_id': {:?}", e),
-            }
-*/

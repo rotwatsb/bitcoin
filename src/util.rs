@@ -6,7 +6,8 @@ use bitcoin::blockdata::block::{LoneBlockHeader, Block};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::network::message_blockdata::Inventory;
 use bitcoin::util::Error;
-
+use bitcoin::util::hash::{Sha256dHash};
+use bitcoin::util::base58::ToBase58;
 
 pub enum ThreadResponse {
     Addresses(Vec<(u32, Address)>),
@@ -29,4 +30,12 @@ pub fn string_of_address(address: &Address) -> String {
         &((address.address[6] % 256).to_string()) + "." +
         &((address.address[7] / 256).to_string()) + "." +
         &((address.address[7] % 256).to_string())
+}
+
+pub fn addr_from_hash(hash: &[u8]) -> String {
+    let mut v = vec![0];
+    v.extend_from_slice(hash);
+    let hashed_hash = Sha256dHash::from_data(&v[..]);
+    v.extend_from_slice(&hashed_hash[..4]);
+    v.to_base58()
 }
