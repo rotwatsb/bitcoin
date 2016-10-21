@@ -6,8 +6,6 @@ use bitcoin::network::listener::Listener;
 use bitcoin::network::constants::Network;
 use bitcoin::network::socket::Socket;
 use bitcoin::network::message::{SocketResponse, NetworkMessage};
-use bitcoin::util::misc::consume_err;
-use bitcoin::util::Error;
 
 use util::ThreadResponse;
 
@@ -24,7 +22,7 @@ impl Peerd {
     }
     
     pub fn listen(&mut self, master: Receiver<NetworkMessage>)
-                  -> Result<Receiver<ThreadResponse>, Error> {
+                  -> Result<Receiver<ThreadResponse>, String> {
         let (sender, receiver): (Sender<ThreadResponse>,
                                  Receiver<ThreadResponse>) = channel();
         
@@ -39,9 +37,10 @@ impl Peerd {
                     loop {
                         match master.try_recv() {
                             Ok(msg) => {
-                                consume_err(
-                                    "Warning: failed to send msg",
-                                    sock.send_message(msg));
+                                match sock.send_message(msg) {
+                                    Ok(()) => (),
+                                    Err(e) => println!("Failed to send message: {:?}", e),
+                                }
                             },
                             Err(TryRecvError::Empty) => (),
                             Err(TryRecvError::Disconnected) => {
@@ -53,33 +52,37 @@ impl Peerd {
                                 match msg {
                                     NetworkMessage::Version(version) => {
                                         println!("Message received: Version");
-                                        consume_err(
-                                            "Failed to send verack",
-                                            sock.send_message(NetworkMessage::Verack));
+                                        match sock.send_message(NetworkMessage::Verack) {
+                                            Ok(()) => (),
+                                            Err(e) => println!("Failed to send verack message: {:?}", e),
+                                        }
                                     },
                                     NetworkMessage::Verack => {
                                         println!("Message received: Verack");
-                                        sock.send_message(NetworkMessage::GetAddr);
+                                        match sock.send_message(NetworkMessage::GetAddr) {
+                                            Ok(()) => (),
+                                            Err(e) => println!("Failed to send getaddr message: {:?}", e),
+                                        }
                                     },
                                     NetworkMessage::Addr(addresses) => {
                                         println!("Message received: Addresses");
-                                        sender.send(ThreadResponse::Addresses(addresses));
+                                        sender.send(ThreadResponse::Addresses(addresses)).unwrap();
                                     },
                                     NetworkMessage::Ping(nonce) => {
                                         println!("Message received: Ping");
-                                        consume_err(
-                                            "Failed to send pong response to ping",
-                                            sock.send_message(NetworkMessage::Pong(nonce)));
+                                        match sock.send_message(NetworkMessage::Pong(nonce)) {
+                                            Ok(()) => (),
+                                            Err(e) => println!("Failed to send pong response to ping: {:?}", e),
+                                        }
                                     },
                                     NetworkMessage::Pong(nonce) => {
                                         println!("Message received: Pong");
                                     },
                                     NetworkMessage::Inv(inventory) => {
                                         println!("Message received: Inventory");
-                                        //println!("{:?}", inventory);
                                         sender.send(ThreadResponse::Inv(
                                             self_clone.peer().to_string(),
-                                            inventory));
+                                            inventory)).unwrap();
                                     },
                                     NetworkMessage::GetData(inventory) => {
                                         println!("Message received: GetData");
@@ -98,17 +101,17 @@ impl Peerd {
                                     },
                                     NetworkMessage::Tx(transaction) => {
                                         println!("Message received: Tx");
-                                        sender.send(ThreadResponse::Tx(transaction));
+                                        sender.send(ThreadResponse::Tx(transaction)).unwrap();
                                     },
                                     NetworkMessage::Block(block) => {
                                         println!("Message received: Block");
-                                        sender.send(ThreadResponse::Block(block));
+                                        sender.send(ThreadResponse::Block(block)).unwrap();
                                     },
                                     NetworkMessage::Headers(lone_block_headers) => {
                                         println!("Message received: Headers");
                                         sender.send(ThreadResponse::Headers(
                                             self_clone.peer().to_string(),
-                                            lone_block_headers));
+                                            lone_block_headers)).unwrap();
                                     },
                                     NetworkMessage::GetAddr => {
                                         println!("Message received: GetAddr");
@@ -118,12 +121,13 @@ impl Peerd {
                             Ok(SocketResponse::ConnectionFailed(err, tx)) => {
                                 tx.send(()); // tear down failing thread
                                 let(txx, rxx) = channel(); // notify parent thread of failure
-                                sender.send(ThreadResponse::CloseThread((err, txx)));
+                                sender.send(ThreadResponse::CloseThread((format!("{:?}", err), txx)));
                                 rxx.recv().unwrap(); // tear down this thread
                                 break;
                             },
-                            _ => println!("Uh oh"),
-                            //Err(e) => println!("{:?}", e),
+                            Err(_) => {
+                                println!("YIKES!");
+                            },
                         }
                     }
                 },
@@ -138,13 +142,13 @@ impl Peerd {
         Ok(receiver)
     }
         
-    fn loop_connect(&self) -> Result<(Receiver<SocketResponse>, Socket), Error> {
-        let max_attempts = 5;
-        let mut err: Error = Error::ParseFailed;
+    fn loop_connect(&self) -> Result<(Receiver<SocketResponse>, Socket), String> {
+        let max_attempts = 3;
+        let mut err: String = "".to_string();
         for _ in 0..max_attempts {
             match self.start() {
                 Ok((chan, sock)) => { return Ok((chan, sock)); }
-                Err(e) => { err = e; }
+                Err(e) => { err = format!("Loop connect error: {:?}", e); }
             }
             thread::sleep(Duration::from_secs(3));
         }

@@ -5,7 +5,6 @@ use bitcoin::network::address::Address;
 use bitcoin::blockdata::block::{LoneBlockHeader, Block};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::network::message_blockdata::Inventory;
-use bitcoin::util::Error;
 use bitcoin::util::hash::{Sha256dHash};
 use bitcoin::util::base58::ToBase58;
 
@@ -15,7 +14,7 @@ pub enum ThreadResponse {
     Inv(String, Vec<Inventory>),
     Block(Block),
     Tx(Transaction),
-    CloseThread((Error, Sender<()>)),
+    CloseThread((String, Sender<()>)),
 }
 
 pub fn ipv4_to_ipv4addr(ip: &str) -> Ipv4Addr {

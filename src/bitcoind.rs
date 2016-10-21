@@ -15,8 +15,8 @@ use bitcoin::network::address::Address;
 use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::util::address::Address as Secp256k1Address;
-use bitcoin::util::Error;
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::util::Error;
 
 use postgres::{Connection, SslMode};
 
@@ -63,7 +63,7 @@ impl Bitcoind {
     }
 
     fn start_connection_manager(&mut self)
-                                -> Result<Receiver<ThreadResponse>, Error> {
+                                -> Result<Receiver<ThreadResponse>, String> {
         
         let (sm_sender, sm_receiver): (Sender<ThreadResponse>,
                                        Receiver<ThreadResponse>) = channel();
@@ -145,10 +145,10 @@ impl Bitcoind {
         Ok(sm_receiver)
     }
     
-    pub fn listen(mut self) -> Result<(), Error> {
+    pub fn listen(mut self) -> Result<(), String> {
         
         let sm_receiver = try!(self.start_connection_manager());
-
+        
         let mut state_queue: VecDeque<State> = VecDeque::new();
         state_queue.push_back(State::Sync);
         
@@ -230,7 +230,7 @@ impl Bitcoind {
                                 let block_clone = block.clone();
                                 match self.blockchain.add_block(block) {
                                     Ok(()) => {
-                                        self.update_db(block_clone);
+                                        try!(self.update_db(block_clone));
                                     },
                                     Err(e) => {
                                         match e {
@@ -259,16 +259,15 @@ impl Bitcoind {
         Ok(())
     }
 
-    fn update_db(&mut self, block: Block) -> Result<(), Error> {
-
+    fn remove_old_blocks(&mut self, conn: &Connection) -> Result<(), String> {
         fn remove_old_block(conn: &Connection, old_block_hash_string: &String)
-                            -> Result<(), Error> {
+                            -> Result<(), String> {
             
             // remove comments
             match conn.execute("DELETE FROM talk_comment WHERE block_hash_id = $1",
                                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed comment data: {}", n),
-                Err(e) => println!("Could not remove comment data: {:?}", e),
+                Err(e) => return Err(format!("Could not remove comment data: {:?}", e)),
             }
 
             // set 'prev_block_hash_id' to NULL for old block's successor
@@ -278,8 +277,7 @@ impl Bitcoind {
                                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully set 'prev_block_hash_id' to NULL \
                                    for block successor in database"),
-                Err(e) => println!("Could not set 'prev_block_hash_id' to NULL for \
-                                    block successor in database: {:?}", e),
+                Err(e) => return Err(format!("Could not set 'prev_block_hash_id' to NULL for block successor in database: {:?}", e)),
             }
 
             // remove txout data
@@ -288,7 +286,7 @@ impl Bitcoind {
                                 $1)",
                                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed TxOut data: {}", n),
-                Err(e) => println!("Could not remove TxOut data: {:?}", e),
+                Err(e) => return Err(format!("Could not remove TxOut data: {:?}", e)),
             }
 
             // remove txin data
@@ -297,45 +295,141 @@ impl Bitcoind {
                                 $1)",
                                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed TxIn data: {}", n),
-                Err(e) => println!("Could not remove TxIn data: {:?}", e),
+                Err(e) => return Err(format!("Could not remove TxIn data: {:?}", e)),
             }
 
             // remove transactions
             match conn.execute("DELETE FROM talk_transaction WHERE block_hash_id \
                                 = $1", &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed Transaction data: {}", n),
-                Err(e) => println!("Could not remove Transaction data: {:?}", e),
+                Err(e) => return Err(format!("Could not remove Transaction data: {:?}", e)),
             }
 
             // delete the old block
             match conn.execute("DELETE FROM talk_block WHERE block_hash = $1",
                                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed old block: {}", n),
-                Err(e) => println!("Could not remove old block: {:?}", e),
+                Err(e) => return Err(format!("Could not remove old block: {:?}", e)),
             }
 
             Ok(())
         }
-        
-        let block_hash: Sha256dHash = block.header.bitcoin_hash();
-        let block_hash_string: String = block_hash.be_hex_string();
-        println!("block hash: {}", block_hash_string.clone());
-        
-        self.db_state.push_back(block_hash);
-        
-        let conn = Connection::connect(self.db_cnx.as_str(), SslMode::None).unwrap();
 
+        // remove old blocks
         while self.db_state.len() > MAX_BLCKS {
             match self.db_state.pop_front() {
                 Some(old_block_hash) => {
                     let old_block_hash_string = old_block_hash.be_hex_string();
                     try!(remove_old_block(&conn, &old_block_hash_string));
-                    try!(self.blockchain.remove_txdata(old_block_hash));
+                    match self.blockchain.remove_txdata(old_block_hash) {
+                        Ok(()) => (),
+                        Err(e) => return Err(format!("Failed removing txdata from blockchain: {:?}", e)),
+                    }
                 }
                 None => panic!("Failed to pop from block queue"),
             }
         }
+
+        Ok(())
+    }
+
+    fn insert_block(&mut self, conn: &Connection, block: &Block,
+                    block_hash: &Sha256dHash) -> Result<(), String> {
         
+        fn insert_header(conn: &Connection, block: &Block,
+                         block_hash_string: &String, block_height: u32,
+                         prev_block_hash_option: &Option<String>)
+                         -> Result<(), String> {
+
+            match conn.execute("INSERT INTO talk_block (block_hash, \
+                                prev_block_hash_id, block_size, block_height, \
+                                merkleroot, time, median_time, bits, nonce) \
+                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                               &[block_hash_string,
+                                 prev_block_hash_option,
+                                 &(1111 as i32),
+                                 &(block_height as i32),
+                                 &block.header.merkle_root.be_hex_string(),
+                                 &(block.header.time as i32),
+                                 &(1111 as i32),
+                                 &(block.header.bits as i64),
+                                 &(block.header.nonce as i64)]) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("Error writing header to database: {:?}", e)),
+            }
+        }
+
+        fn insert_txs(conn: &Connection, block: &Block, block_hash_string: &String)
+                      -> Result<(), String> {
+            for tx in block.txdata.clone() {
+                let tx_hash_string = tx.bitcoin_hash().be_hex_string();
+                
+                // insert transaction
+                match conn.execute("INSERT INTO talk_transaction \
+                                    (tx_hash, block_hash_id) VALUES ($1, $2)",
+                                   &[&tx_hash_string, block_hash_string]) {
+                    Ok(_) => (),
+                    Err(e) => return Err(format!("Error writing transaction to database: {:?}", e)),
+                }
+
+                // insert inputs
+                for input in tx.input {
+                    let output_id: String = input.prev_hash.be_hex_string() +
+                        &(input.prev_index.to_string());
+                    match conn.execute("INSERT INTO talk_txin (tx_id, output_id) \
+                                        VALUES ($1, (SELECT (CASE WHEN EXISTS \
+                                        (SELECT 1 FROM talk_txout WHERE output=$2) \
+                                        THEN $2 ELSE NULL END)))",
+                                       &[&tx_hash_string,
+                                         &output_id]) {
+                        Ok(_) => (),
+                        Err(e) =>  return Err(format!("Error writing input to database: {:?}", e)),
+                    }
+                }
+
+                // insert outputs
+                for (i, output) in tx.output.iter().enumerate() {
+                    let output_id: String = tx_hash_string.clone() +
+                        &(i.to_string());
+                    
+                    let v = output.script_pubkey.clone().into_vec();
+                    let mut j = 0;
+                    let l = v.len();
+                    while j < l && v[j] != 20 { j += 1 }
+                    let addr = if v.len() >= j + 21 {
+                        addr_from_hash(&v[j + 1..j + 21])
+                    } else { "".to_string() };
+
+                    // insert address
+                    match conn.execute("INSERT INTO talk_address (address) \
+                                        (SELECT $1::VARCHAR WHERE NOT EXISTS \
+                                        (SELECT $1::VARCHAR FROM talk_address WHERE \
+                                        address=$1))",
+                                       &[&addr]) {
+                        Ok(_) => (),
+                        Err(e) => return Err(format!("Error writing address to database: {:?}", e)),
+                    }
+
+                    // actually insert output (after inserting address)
+                    match conn.execute("INSERT INTO talk_txout (tx_id, value, \
+                                        output_index, address_id, output) \
+                                        VALUES ($1, $2, $3, $4, $5)",
+                                       &[&tx_hash_string,
+                                         &(output.value as i64),
+                                         &(i as i32),
+                                         &addr,
+                                         &output_id]) {
+                        Ok(_) => (),
+                        Err(e) => return Err(format!("Error writing txout to rainbow: {:?}", e)),
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let block_hash_string: String = block_hash.be_hex_string();
+        println!("block hash: {}", block_hash_string.clone());
+
         let block_height: u32 =
             if let Some(block_node_ref) =
             self.blockchain.get_block(block_hash.clone()) {
@@ -348,71 +442,20 @@ impl Bitcoind {
                 Some(pbh.be_hex_string())
             } else { None };
         
-        match conn.execute("INSERT INTO talk_block (block_hash, prev_block_hash_id, \
-                            block_size, block_height, merkleroot, time, \
-                            median_time, bits, nonce) \
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                           &[&block_hash_string,
-                             &prev_block_hash_option,
-                             &(1111 as i32),
-                             &(block_height as i32),
-                             &block.header.merkle_root.be_hex_string(),
-                             &(block.header.time as i32),
-                             &(1111 as i32),
-                             &(block.header.bits as i64),
-                             &(block.header.nonce as i64)]) {
-            Ok(_) => (),
-            Err(e) => println!("Error writing block to rainbow: {:?}", e),
-        }
+        try!(insert_header(conn, block, &block_hash_string, block_height,
+                           &prev_block_hash_option));
+        try!(insert_txs(conn, block, &block_hash_string));
+        Ok(())
+    }
 
+    fn update_db(&mut self, block: Block) -> Result<(), String> {
+                
+        let block_hash: Sha256dHash = block.header.bitcoin_hash();
+        self.db_state.push_back(block_hash);
+        let conn = Connection::connect(self.db_cnx.as_str(), SslMode::None).unwrap();
+        try!(self.remove_old_blocks(&conn));
+        try!(self.insert_block(&conn, &block, &block_hash));
         //self.save_scriptsigs(&block);
-        
-        for tx in block.txdata {
-            let tx_hash_string = tx.bitcoin_hash().be_hex_string();
-            match conn.execute("INSERT INTO talk_transaction \
-                                (tx_hash, block_hash_id) VALUES ($1, $2)",
-                               &[&tx_hash_string, &block_hash_string]) {
-                Ok(_) => (),
-                Err(e) => println!("Error writing transaction to rainbow: {:?}", e),
-            }
-            
-            for input in tx.input {
-                
-                match conn.execute("INSERT INTO talk_txin \
-                                    (tx_id, prev_tx, prev_index) \
-                                    VALUES ($1, $2, $3)",
-                                   &[&tx_hash_string,
-                                     &(input.prev_hash.be_hex_string()),
-                                     &(input.prev_index as i32)]) {
-                    Ok(_) => (),
-                    Err(e) =>
-                        println!("Error writing txin to rainbow: {:?}", e),
-                }
-            }
-            
-            for (i, output) in tx.output.iter().enumerate() {
-
-                let v = output.script_pubkey.clone().into_vec();
-                let mut j = 0;
-                let l = v.len();
-                while j < l && v[j] != 20 { j += 1 }
-                let addr = if v.len() >= j + 21 {
-                    addr_from_hash(&v[j + 1..j + 21])
-                } else { "".to_string() };
-                
-                match conn.execute("INSERT INTO talk_txout \
-                                    (tx_id, value, output_index, pubkey) \
-                                    VALUES ($1, $2, $3, $4)",
-                                   &[&tx_hash_string,
-                                     &(output.value as i64),
-                                     &(i as i32),
-                                     &addr]) {
-                    Ok(_) => (),
-                    Err(e) => println!("Error writing txout to rainbow: {:?}", e),
-                }
-            }
-        }
-        
         try!(self.save_db_state());
         
         Ok(())
@@ -463,7 +506,7 @@ impl Bitcoind {
             }
     }
 
-    fn save_blockchain(&mut self) -> Result<(), Error> {
+    fn save_blockchain(&mut self) -> Result<(), String> {
         match OpenOptions::new()
             .write(true)
             .create(true)
@@ -473,18 +516,15 @@ impl Bitcoind {
                         BufWriter::new(file));
                     match self.blockchain.consensus_encode(&mut encoder) {
                         Ok(()) => println!("Done saving blockchain."),
-                        Err(e) => {
-                            println!("Faild to write to blockchian");
-                            return Err(e);
-                        },
+                        Err(e) => return Err(format!("Failed to write to blockchian: {:?}", e)),
                     }
                 },
-                Err(e) => println!("Could not open blockchain for saving"),
+                Err(e) => return Err(format!("Could not open blockchain for saving: {:?}", e)),
             }
         Ok(())
     }
 
-    fn save_db_state(&mut self) -> Result<(), Error> {
+    fn save_db_state(&mut self) -> Result<(), String> {
         let queue_as_vec: Vec<Sha256dHash> = self.db_state.iter()
             .map(|&hash| hash.clone()).collect();
 
@@ -498,15 +538,10 @@ impl Bitcoind {
                     let mut encoder = RawEncoder::new(BufWriter::new(file));
                     match queue_as_vec.consensus_encode(&mut encoder) {
                         Ok(()) => println!("Done saving db state."),
-                        Err(e) => {
-                            println!("Failed to write db state");
-                            return Err(e);
-                        },
+                        Err(e) => return Err(format!("Failed to write db state: {:?}", e)),
                     }
                 }
-                Err(e) => {
-                    println!("Failed to open db_state.dat: {:?}", e);
-                }
+                Err(e) => return Err(format!("Failed to open db_state.dat: {:?}", e)),
             }
         Ok(())
     }
