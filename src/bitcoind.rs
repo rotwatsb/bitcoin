@@ -280,6 +280,17 @@ impl Bitcoind {
                 Err(e) => return Err(format!("Could not set 'prev_block_hash_id' to NULL for block successor in database: {:?}", e)),
             }
 
+            // set news txins referencing doomed txouts to NULL
+            match conn.execute("UPDATE talk_txin SET output_id = NULL \
+                                WHERE output_id IN (SELECT output FROM talk_txout \
+                                WHERE tx_id IN (SELECT tx_hash FROM \
+                                talk_transaction WHERE block_hash_id = $1))",
+                               &[&old_block_hash_string]) {
+                Ok(n) => println!("Successfully nulled references to doomed txouts"),
+                Err(e) => return Err(format!("Could not null references to doomed \
+                                              txouts: {:?}", e)),
+            }
+
             // remove txout data
             match conn.execute("DELETE FROM talk_txout WHERE tx_id IN (SELECT \
                                 tx_hash FROM talk_transaction WHERE block_hash_id = \
