@@ -14,6 +14,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::network::address::Address;
 use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::transaction::{Transaction};
 use bitcoin::util::address::Address as Secp256k1Address;
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::util::Error;
@@ -372,17 +373,9 @@ impl Bitcoind {
 
         fn insert_txs(conn: &Connection, block: &Block, block_hash_string: &String)
                       -> Result<(), String> {
-            for tx in block.txdata.clone() {
-                let tx_hash_string = tx.bitcoin_hash().be_hex_string();
-                
-                // insert transaction
-                match conn.execute("INSERT INTO talk_transaction \
-                                    (tx_hash, block_hash_id) VALUES ($1, $2)",
-                                   &[&tx_hash_string, block_hash_string]) {
-                    Ok(_) => (),
-                    Err(e) => return Err(format!("Error writing transaction to database: {:?}", e)),
-                }
 
+            fn insert_inoutputs(conn: &Connection, tx: Transaction,
+                                tx_hash_string: &String) -> Result<(), String> {
                 // insert inputs
                 for input in tx.input {
                     let output_id: String = input.prev_hash.be_hex_string() +
@@ -433,6 +426,19 @@ impl Bitcoind {
                         Ok(_) => (),
                         Err(e) => return Err(format!("Error writing txout to rainbow: {:?}", e)),
                     }
+                }
+                Ok(())
+            }
+            
+            for tx in block.txdata.clone() {
+                let tx_hash_string = tx.bitcoin_hash().be_hex_string();
+                
+                // insert transaction
+                match conn.execute("INSERT INTO talk_transaction \
+                                    (tx_hash, block_hash_id) VALUES ($1, $2)",
+                                   &[&tx_hash_string, block_hash_string]) {
+                    Ok(_) => try!(insert_inoutputs(&conn, tx, &tx_hash_string)),
+                    Err(e) => println!("Error writing transaction to database: {:?}", e),
                 }
             }
             Ok(())
