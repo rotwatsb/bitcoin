@@ -22,7 +22,7 @@ use bitcoin::util::Error;
 use postgres::{Connection, SslMode};
 
 use peerd::Peerd;
-use util::{ThreadResponse, ipv4_to_ipv4addr, string_of_address, addr_from_hash};
+use util::{ThreadResponse, ipv4_to_ipv4addr, string_of_address, addr_from_output};
 
 pub const MAX_CNXS: usize = 50;
 pub const MAX_BLCKS: usize = 200;
@@ -265,63 +265,65 @@ impl Bitcoind {
                             -> Result<(), String> {
             
             // remove comments
-            match conn.execute("DELETE FROM talk_comment WHERE block_hash_id = $1",
-                               &[&old_block_hash_string]) {
+            match conn.execute(
+                "DELETE FROM talk_comment WHERE block_hash_id = $1",
+                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed comment data: {}", n),
-                Err(e) => return Err(format!("Could not remove comment data: {:?}", e)),
+                Err(e) => return Err(format!("Removing comment data: {:?}", e)),
             }
 
             // set 'prev_block_hash_id' to NULL for old block's successor
-            match conn.execute("UPDATE talk_block SET prev_block_hash_id = NULL \
-                                WHERE block_hash IN (SELECT block_hash FROM \
-                                talk_block WHERE prev_block_hash_id = $1)",
-                               &[&old_block_hash_string]) {
+            match conn.execute(
+                "UPDATE talk_block SET prev_block_hash_id = NULL WHERE block_hash IN \
+                 (SELECT block_hash FROM talk_block WHERE prev_block_hash_id = $1)",
+                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully set 'prev_block_hash_id' to NULL \
                                    for block successor in database"),
-                Err(e) => return Err(format!("Could not set 'prev_block_hash_id' to NULL for block successor in database: {:?}", e)),
+                Err(e) => return Err(format!("Setting prev_block_hash_id: {:?}", e)),
             }
 
             // set news txins referencing doomed txouts to NULL
-            match conn.execute("UPDATE talk_txin SET output_id = NULL \
-                                WHERE output_id IN (SELECT output FROM talk_txout \
-                                WHERE tx_id IN (SELECT tx_hash FROM \
-                                talk_transaction WHERE block_hash_id = $1))",
-                               &[&old_block_hash_string]) {
+            match conn.execute(
+                "UPDATE talk_txin SET output_id = NULL WHERE output_id IN (SELECT \
+                 output FROM talk_txout WHERE tx_id IN (SELECT tx_hash FROM \
+                 talk_transaction WHERE block_hash_id = $1))",
+                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully nulled references to doomed txouts"),
-                Err(e) => return Err(format!("Could not null references to doomed \
-                                              txouts: {:?}", e)),
+                Err(e) => return Err(format!("Nulling doomed references: {:?}", e)),
             }
 
             // remove txout data
-            match conn.execute("DELETE FROM talk_txout WHERE tx_id IN (SELECT \
-                                tx_hash FROM talk_transaction WHERE block_hash_id = \
-                                $1)",
-                               &[&old_block_hash_string]) {
+            match conn.execute(
+                "DELETE FROM talk_txout WHERE tx_id IN (SELECT tx_hash FROM \
+                 talk_transaction WHERE block_hash_id = $1)",
+                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed TxOut data: {}", n),
-                Err(e) => return Err(format!("Could not remove TxOut data: {:?}", e)),
+                Err(e) => return Err(format!("Removing TxOut data: {:?}", e)),
             }
 
             // remove txin data
-            match conn.execute("DELETE FROM talk_txin WHERE tx_id IN (SELECT \
-                                tx_hash FROM talk_transaction WHERE block_hash_id = \
-                                $1)",
-                               &[&old_block_hash_string]) {
+            match conn.execute(
+                "DELETE FROM talk_txin WHERE tx_id IN (SELECT tx_hash FROM \
+                 talk_transaction WHERE block_hash_id = $1)",
+                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed TxIn data: {}", n),
-                Err(e) => return Err(format!("Could not remove TxIn data: {:?}", e)),
+                Err(e) => return Err(format!("Removing TxIn data: {:?}", e)),
             }
 
             // remove transactions
-            match conn.execute("DELETE FROM talk_transaction WHERE block_hash_id \
-                                = $1", &[&old_block_hash_string]) {
+            match conn.execute(
+                "DELETE FROM talk_transaction WHERE block_hash_id = $1",
+                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed Transaction data: {}", n),
-                Err(e) => return Err(format!("Could not remove Transaction data: {:?}", e)),
+                Err(e) => return Err(format!("Removing Transaction data: {:?}", e)),
             }
 
             // delete the old block
-            match conn.execute("DELETE FROM talk_block WHERE block_hash = $1",
-                               &[&old_block_hash_string]) {
+            match conn.execute(
+                "DELETE FROM talk_block WHERE block_hash = $1",
+                &[&old_block_hash_string]) {
                 Ok(n) => println!("Successfully removed old block: {}", n),
-                Err(e) => return Err(format!("Could not remove old block: {:?}", e)),
+                Err(e) => return Err(format!("Removing old block: {:?}", e)),
             }
 
             Ok(())
@@ -335,7 +337,8 @@ impl Bitcoind {
                     try!(remove_old_block(&conn, &old_block_hash_string));
                     match self.blockchain.remove_txdata(old_block_hash) {
                         Ok(()) => (),
-                        Err(e) => return Err(format!("Failed removing txdata from blockchain: {:?}", e)),
+                        Err(e) =>
+                            return Err(format!("Removing from blockchain: {:?}", e)),
                     }
                 }
                 None => panic!("Failed to pop from block queue"),
@@ -352,96 +355,128 @@ impl Bitcoind {
                          block_hash_string: &String, block_height: u32,
                          prev_block_hash_option: &Option<String>)
                          -> Result<(), String> {
-
-            match conn.execute("INSERT INTO talk_block (block_hash, \
-                                prev_block_hash_id, block_size, block_height, \
-                                merkleroot, time, median_time, bits, nonce) \
-                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                               &[block_hash_string,
-                                 prev_block_hash_option,
-                                 &(1111 as i32),
-                                 &(block_height as i32),
-                                 &block.header.merkle_root.be_hex_string(),
-                                 &(block.header.time as i32),
-                                 &(1111 as i32),
-                                 &(block.header.bits as i64),
-                                 &(block.header.nonce as i64)]) {
+            
+            let mut total_val_placeholder: Option<i64> = None;
+            
+            match conn.execute(
+                "INSERT INTO talk_block (block_hash, prev_block_hash_id, \
+                 block_size, block_height, merkleroot, time, median_time, bits, \
+                 nonce, total_value) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                &[block_hash_string,
+                  prev_block_hash_option,
+                  &(1111 as i32),
+                  &(block_height as i32),
+                  &block.header.merkle_root.be_hex_string(),
+                  &(block.header.time as i32),
+                  &(1111 as i32),
+                  &(block.header.bits as i64),
+                  &(block.header.nonce as i64),
+                  &total_val_placeholder]) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(format!("Error writing header to database: {:?}", e)),
             }
         }
 
         fn insert_txs(conn: &Connection, block: &Block, block_hash_string: &String)
-                      -> Result<(), String> {
+                      -> Result<i64, String> {
 
             fn insert_inoutputs(conn: &Connection, tx: Transaction,
-                                tx_hash_string: &String) -> Result<(), String> {
+                                tx_hash_string: &String) -> Result<i64, String> {
+                
                 // insert inputs
                 for input in tx.input {
                     let output_id: String = input.prev_hash.be_hex_string() +
                         &(input.prev_index.to_string());
-                    match conn.execute("INSERT INTO talk_txin (tx_id, output_id) \
-                                        VALUES ($1, (SELECT (CASE WHEN EXISTS \
-                                        (SELECT 1 FROM talk_txout WHERE output=$2) \
-                                        THEN $2 ELSE NULL END)))",
-                                       &[&tx_hash_string,
-                                         &output_id]) {
+                    
+                    match conn.execute(
+                        "INSERT INTO talk_txin (tx_id, output_id) VALUES ($1, \
+                         (SELECT (CASE WHEN EXISTS (SELECT 1 FROM talk_txout WHERE \
+                         output=$2) THEN $2 ELSE NULL END)))",
+                        &[&tx_hash_string,
+                          &output_id]) {
                         Ok(_) => (),
                         Err(e) =>  return Err(format!("Error writing input to database: {:?}", e)),
                     }
                 }
 
+                let mut total_amount: i64 = 0;
+
                 // insert outputs
                 for (i, output) in tx.output.iter().enumerate() {
                     let output_id: String = tx_hash_string.clone() +
                         &(i.to_string());
+
+                    if let Some(addr) = addr_from_output(&output) {
                     
-                    let v = output.script_pubkey.clone().into_vec();
-                    let mut j = 0;
-                    let l = v.len();
-                    while j < l && v[j] != 20 { j += 1 }
-                    let addr = if v.len() >= j + 21 {
-                        addr_from_hash(&v[j + 1..j + 21])
-                    } else { "".to_string() };
+                        // insert address
+                        match conn.execute(
+                            "INSERT INTO talk_address (address) (SELECT $1::VARCHAR \
+                             WHERE NOT EXISTS (SELECT $1::VARCHAR FROM talk_address \
+                             WHERE address=$1))",
+                            &[&addr]) {
+                            Ok(_) => (),
+                            Err(e) => return Err(format!("Writing address: {:?}", e)),
+                        }
 
-                    // insert address
-                    match conn.execute("INSERT INTO talk_address (address) \
-                                        (SELECT $1::VARCHAR WHERE NOT EXISTS \
-                                        (SELECT $1::VARCHAR FROM talk_address WHERE \
-                                        address=$1))",
-                                       &[&addr]) {
-                        Ok(_) => (),
-                        Err(e) => return Err(format!("Error writing address to database: {:?}", e)),
-                    }
-
-                    // actually insert output (after inserting address)
-                    match conn.execute("INSERT INTO talk_txout (tx_id, value, \
-                                        output_index, address_id, output) \
-                                        VALUES ($1, $2, $3, $4, $5)",
-                                       &[&tx_hash_string,
-                                         &(output.value as i64),
-                                         &(i as i32),
-                                         &addr,
-                                         &output_id]) {
-                        Ok(_) => (),
-                        Err(e) => return Err(format!("Error writing txout to rainbow: {:?}", e)),
+                        // actually insert output (after inserting address)
+                        match conn.execute(
+                            "INSERT INTO talk_txout (tx_id, value, output_index, \
+                             address_id, output) VALUES ($1, $2, $3, $4, $5)",
+                            &[&tx_hash_string,
+                              &(output.value as i64),
+                              &(i as i32),
+                              &addr,
+                              &output_id]) {
+                            Ok(_) => total_amount += output.value as i64,
+                            Err(e) => return Err(format!("Writing txout: {:?}", e)),
+                        }
                     }
                 }
-                Ok(())
+                Ok(total_amount)
             }
-            
+
+            let mut block_total: i64 = 0;
+
             for tx in block.txdata.clone() {
                 let tx_hash_string = tx.bitcoin_hash().be_hex_string();
-                
+
+                let mut tx_total_placeholder: Option<i64> = None;
+
                 // insert transaction
-                match conn.execute("INSERT INTO talk_transaction \
-                                    (tx_hash, block_hash_id) VALUES ($1, $2)",
-                                   &[&tx_hash_string, block_hash_string]) {
-                    Ok(_) => try!(insert_inoutputs(&conn, tx, &tx_hash_string)),
-                    Err(e) => println!("Error writing transaction to database: {:?}", e),
+                match conn.execute(
+                    "INSERT INTO talk_transaction (tx_hash, block_hash_id, \
+                     total_value) VALUES ($1, $2, $3)",
+                    &[&tx_hash_string, block_hash_string, &tx_total_placeholder]) {
+                    Ok(_) => {
+                        let tx_total =
+                            try!(insert_inoutputs(&conn, tx, &tx_hash_string));
+                        
+                        block_total += tx_total;
+                        
+                        // update transaction total after inserting outputs
+                        match conn.execute(
+                            "UPDATE talk_transaction SET total_value = $1 WHERE \
+                             tx_hash = $2",
+                            &[&tx_total, &tx_hash_string]) {
+                            Ok(_) => (),
+                            Err(e) => return Err(format!("Updating tx total: {:?}", e)),
+                        }
+                    },
+                    Err(e) => println!("Duplicate transaction {:?}: {:?}",
+                                       tx_hash_string, e),
                 }
             }
-            Ok(())
+            Ok(block_total)
+        }
+
+        fn update_block_with_total(conn: &Connection, block_hash_string:
+                                   &String, total: &i64) -> Result<(), String> {
+            match conn.execute(
+                "UPDATE talk_block SET total_value = $1 WHERE block_hash = $2",
+                &[&total, block_hash_string]) {
+                Ok(_) => Ok(()),
+                Err(e) => return Err(format!("Updating block total: {:?}", e)),
+            }
         }
 
         let block_hash_string: String = block_hash.be_hex_string();
@@ -461,7 +496,10 @@ impl Bitcoind {
         
         try!(insert_header(conn, block, &block_hash_string, block_height,
                            &prev_block_hash_option));
-        try!(insert_txs(conn, block, &block_hash_string));
+        
+        let block_total: i64 = try!(insert_txs(conn, block, &block_hash_string));
+        try!(update_block_with_total(conn, &block_hash_string, &block_total));
+        
         Ok(())
     }
 
